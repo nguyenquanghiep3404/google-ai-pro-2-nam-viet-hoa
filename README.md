@@ -2,9 +2,13 @@
 Google AI Pro (5 TB) Zero-Cost 2-Year Full Auto Console  
 ========================================================================  
 
+**English** | [Tiếng Việt](README.vi.md)
+
 **Multilingual Support:** 中文 (Chinese) | English | Bahasa Indonesia (Indonesian) | Tiếng Việt (Vietnamese)
 
 Disclaimer: This project is provided as open-source for community analysis and learning purposes.
+
+> 📖 Detailed usage guide (Vietnamese): **[HUONGDAN.md](HUONGDAN.md)**
 
 ## I. System Requirements
 
@@ -16,8 +20,8 @@ Disclaimer: This project is provided as open-source for community analysis and l
 ## II. Quick Start
 
 ### Option 1: Windows Batch Files
-1. First run: double-click **1_首次运行_安装依赖并启动.bat**
-2. Daily use: double-click **2_启动控制台.bat**
+1. First run: double-click **1_setup_install_deps_and_start.bat**
+2. Daily use: double-click **2_start_console.bat**
 3. Browser opens automatically: http://127.0.0.1:8765
 
 ### Option 2: Manual Python
@@ -67,7 +71,7 @@ python app.py
 
 - ✅ Full automation: login → verification → multi-tier stacking → unsubscribe lock
 - ✅ Zero-cost protection: validates $0.00 before checkout
-- ✅ Multi-language UI: Chinese / English / Indonesian
+- ✅ Multi-language UI: Chinese / English / Indonesian / Vietnamese
 - ✅ Real-time logs & progress monitoring
 - ✅ Batch account processing
 - ✅ Proxy support (HTTP/HTTPS/SOCKS5)
@@ -86,10 +90,32 @@ python app.py
 ├── i18n_en_us.json      # English translations
 ├── i18n_id_id.json      # Indonesian translations
 ├── i18n_vi_vn.json      # Vietnamese translations
+├── README.vi.md         # Vietnamese readme
+├── HUONGDAN.md          # Detailed usage guide (Vietnamese)
 └── screenshots/         # Account proof screenshots
 ```
 
-## VI. Internationalization (i18n)
+## VI. Verified free-period structure
+
+The subscription is a **bundle** of two items, each with its own end date:
+
+| Item | Trial | End date |
+|---|---|---|
+| YouTube Premium Individual Add On | 1 month | e.g. 2026-12-09 |
+| Google AI Pro (5 TB) | 12 months (deferred) | Tier 1 → 2027-11-09 · +Tier 2 → 2028-05-10 · +Tier 3 → 2028-11-09 |
+
+Each additional offer pushes the Google AI Pro end date forward by 6 months, using the balance of the current plan. In the checkout popup the `开始日期` field of Google AI Pro is the **trial end date**, which is how you can tell whether a tier actually applied.
+
+> ⚠️ **Google answers "success" even when the offer changes nothing.** Step 4 in this build therefore reads the real end date from the Play [Manage] dialog and falls back to the next offer token when the date does not move.
+
+**Reading the real expiry:** `play.google.com/store/account/subscriptions` only lists the *next billing* date. Open **管理 / Manage** and read the *套装 (bundle)* section instead:
+
+```
+Google AI Pro (5 TB)               - 将于 2028年11月9日结束
+YouTube Premium Individual Add On  - 将于 2026年12月9日结束
+```
+
+## VII. Internationalization (i18n)
 
 All UI text is translatable:
 - **i18n_zh_cn.json** - Chinese Simplified (96 keys)
@@ -102,7 +128,7 @@ Language preference stored in browser localStorage. Add new languages by:
 2. Registering the code in `lang_map` inside `app.py` (`load_i18n`)
 3. Adding option to language selector in `templates/index.html`
 
-## VII. API Endpoints
+## VIII. API Endpoints
 
 - `GET /` - Web UI
 - `GET /api/state` - Current state (accounts, logs, config)
@@ -117,7 +143,7 @@ Language preference stored in browser localStorage. Add new languages by:
 - `POST /api/proxy/test` - Test proxy connectivity
 - `POST /api/open_browser` - Manual browser control
 
-## VIII. Troubleshooting
+## IX. Troubleshooting
 
 **Port already in use:**
 ```bash
@@ -131,12 +157,20 @@ python app.py --port 9000
 **Proxy issues:**
 - Test proxy in UI using **Test Proxy Connectivity** button
 - Verify credentials and format
+- A `407 Unauthorized` usually means a wrong password. Copy-paste it straight
+  from the provider dashboard: `I` (capital i) and `l` (lower L) look alike.
 
-## IX. References
+**Chrome did not open the debug port:**
+- A leftover Chrome window still holds the account profile. Close every Chrome
+  window of this project and run again (the build also kills them for you).
+
+## X. References
 
 Original project: https://github.com/worldonlyu/Google_AI_Pro_2Year_ZeroCost_Auto
 
 i18n fork: https://github.com/gemhelixx17/google-ai-pro
+
+Vietnamese fork + Windows pipeline fixes: https://github.com/nguyenquanghiep3404/google-ai-pro-viet-hoa
 
 ---
 

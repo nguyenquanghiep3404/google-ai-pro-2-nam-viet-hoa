@@ -4,12 +4,21 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# Windows consoles default to cp1252/cp936 and cannot encode the emoji used in
+# log lines. Reconfigure stdout/stderr so printing never raises UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from automation_engine import (
     GoogleUltraAutomator,
@@ -18,6 +27,7 @@ from automation_engine import (
     get_profile_dir,
     resolve_account_proxy,
     parse_proxy_string,
+    kill_chrome_for_profile,
     CHROME_PATH,
     BASE_DIR,
     SCREENSHOTS_DIR,
@@ -54,7 +64,7 @@ def save_config(cfg: Dict[str, Any]):
 
 def load_i18n(lang: str = "zh-CN") -> Dict[str, Any]:
     """Load i18n translations for language"""
-    lang_map = {"zh-CN": "i18n_zh_cn.json", "zh": "i18n_zh_cn.json", "en": "i18n_en_us.json", "en-US": "i18n_en_us.json", "id": "i18n_id_id.json", "in": "i18n_id_id.json"}
+    lang_map = {"zh-CN": "i18n_zh_cn.json", "zh": "i18n_zh_cn.json", "en": "i18n_en_us.json", "en-US": "i18n_en_us.json", "id": "i18n_id_id.json", "in": "i18n_id_id.json", "vi": "i18n_vi_vn.json", "vi-VN": "i18n_vi_vn.json", "vn": "i18n_vi_vn.json"}
     filename = lang_map.get(lang, "i18n_zh_cn.json")
     path = os.path.join(BASE_DIR, filename)
     if not os.path.exists(path):
@@ -67,10 +77,15 @@ def load_i18n(lang: str = "zh-CN") -> Dict[str, Any]:
 
 
 def append_log(line: str):
-    print(line, flush=True)
+    # Record first, print second: a console encoding failure must never drop the
+    # log entry or abort the automation task.
     LOGS.append(line)
     if len(LOGS) > 500:
         del LOGS[: len(LOGS) - 500]
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
 
 
 class ConfigUpdateReq(BaseModel):
@@ -167,9 +182,20 @@ async def test_proxy(req: ProxyTestReq):
     if not resolved:
         return {"ok": False, "message": "Proxy Template missing"}
 
+    # Normalise to the scheme://user:pass@host:port form that urllib requires.
+    # The automation pipeline accepts several shorthand formats, this test
+    # endpoint must understand exactly the same set.
+    parsed = parse_proxy_string(resolved)
+    if not parsed:
+        return {"ok": False, "message": f"Could not parse proxy template: {resolved}"}
+    proxy_url = (
+        f"{parsed['scheme']}://{parsed['username']}:{parsed['password']}"
+        f"@{parsed['host']}:{parsed['port']}"
+    )
+
     def _sync_probe():
         import urllib.request
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": resolved, "https": resolved}))
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
         r = urllib.request.Request("https://ipwho.is/", headers={"User-Agent": "Mozilla/5.0"})
         data = json.loads(opener.open(r, timeout=15).read().decode("utf-8"))
         bal_gb = None
@@ -389,14 +415,16 @@ async def run_batch(req: RunBatchReq):
         global BATCH_RUNNING, STOP_BATCH
         BATCH_RUNNING = True
         STOP_BATCH = False
-        append_log(f"[{time.strftime('%H:%M:%S')}] [BATCH] 🚀 Started batch pipeline queue: {queue_ids} (Start step: Step {req.start_step})")
         try:
+            append_log(f"[{time.strftime('%H:%M:%S')}] [BATCH] 🚀 Started batch pipeline queue: {queue_ids} (Start step: Step {req.start_step})")
             for idx, aid in enumerate(queue_ids):
                 if STOP_BATCH:
                     append_log(f"[{time.strftime('%H:%M:%S')}] [BATCH] ⏹ Batch queue stopped by user")
                     break
                 await _run_account_worker(aid, start_step=req.start_step, port=9330 + (idx % 5))
                 await asyncio.sleep(2)
+        except Exception as e:
+            append_log(f"[{time.strftime('%H:%M:%S')}] [BATCH] ❌ Batch runner aborted: {e}")
         finally:
             BATCH_RUNNING = False
             append_log(f"[{time.strftime('%H:%M:%S')}] [BATCH] 🏁 Batch execution finished")
@@ -538,6 +566,9 @@ async def open_browser_manual(req: AccountActionReq):
             "https://play.google.com/store/account/orderhistory?hl=zh-CN",
         ]
     )
+    # Release the profile before handing it to a new Chrome, otherwise the old
+    # window keeps the lock and the automation pipeline cannot reuse the profile.
+    kill_chrome_for_profile(user_data_dir)
     _launch_on_interactive_desktop(chrome_args)
     append_log(
         f"[{time.strftime('%H:%M:%S')}] [BROWSER] 🌐 Opened manual browser for [{target_acc['id']}] ({target_acc['email']}) Chrome profile"

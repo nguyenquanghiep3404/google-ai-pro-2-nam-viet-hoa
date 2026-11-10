@@ -225,6 +225,38 @@ def is_port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def kill_chrome_for_profile(user_data_dir: str) -> int:
+    """
+    Terminate every Chrome process still bound to `user_data_dir`.
+
+    Chrome only allows one instance per --user-data-dir. If a leftover window
+    (for example the one opened by the manual browser button) is still alive,
+    the next launch silently hands the profile over to that instance and exits
+    without opening --remote-debugging-port, which makes the CDP connection
+    fail with ECONNREFUSED.
+    """
+    target = os.path.abspath(user_data_dir)
+    literal = target.replace("'", "''")
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        "Where-Object { $_.CommandLine -and $_.CommandLine.Contains('" + literal + "') } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    killed = 0
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+    # Give Chrome a moment to release the profile lock file.
+    time.sleep(1.2)
+    return killed
+
+
 def parse_proxy_string(raw_proxy: str) -> Optional[Dict[str, Any]]:
     """
     Parse various proxy formats into {scheme, host, port, username, password}:
@@ -547,10 +579,15 @@ class GoogleUltraAutomator:
             except Exception as e:
                 last_err = e
                 err_short = str(e).splitlines()[0][:80]
+                if "has been closed" in err_short or "Target closed" in err_short:
+                    self.log(f"❌ Browser window was closed during navigation ({err_short}). Re-run the pipeline.")
+                    raise
                 if attempt < 3:
                     if self.proxy_bridge:
                         self.proxy_bridge.rotate_session()
-                    self.log(f"⚠️ Residential proxy network fluctuation ({err_short})，Automatically switching to same-country residential node and retrying ({attempt + 1}/3)...")
+                        self.log(f"⚠️ Residential proxy network fluctuation ({err_short})，Automatically switching to same-country residential node and retrying ({attempt + 1}/3)...")
+                    else:
+                        self.log(f"⚠️ Navigation failed ({err_short})，retrying ({attempt + 1}/3)...")
                     await asyncio.sleep(2.5)
         raise last_err
 
@@ -939,6 +976,31 @@ class GoogleUltraAutomator:
         clean = " | ".join([l.strip() for l in txt.splitlines() if l.strip()])
         return clean
 
+    async def read_ai_pro_end_date(self, page) -> Optional[str]:
+        """
+        Read the real end date of the Google AI Pro (5 TB) free period.
+
+        The Play subscriptions page only lists the *next billing* date, but the
+        [Manage] dialog lists every item of the bundle with its own end date
+        ("Google AI Pro (5 TB) - 将于 2028年11月9日结束"). That is the only
+        reliable source for the free-period length.
+        """
+        try:
+            await self.safe_goto(page, "https://play.google.com/store/account/subscriptions?hl=zh-CN", timeout=40000)
+            await asyncio.sleep(3.5)
+            mbtn = page.get_by_text(re.compile(r"^(Manage|管理)$", re.I))
+            if not await mbtn.count():
+                return None
+            await mbtn.first.click()
+            await asyncio.sleep(3)
+            body = await page.inner_text("body")
+        except Exception:
+            return None
+        m = re.search(r"Google AI Pro \(5 TB\)\s*-\s*将于\s*([0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日)", body)
+        if not m:
+            m = re.search(r"Google AI Pro \(5 TB\)\s*-\s*(?:ends?)?\s*([0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2})", body)
+        return m.group(1) if m else None
+
     async def ensure_subscription_active(self, page):
         """If the account has a cancelled subscription ('重新订阅'), click Resubscribe so Mode 5 stacking works."""
         await self.safe_goto(page, "https://play.google.com/store/account/subscriptions?hl=zh-CN", timeout=40000)
@@ -1010,6 +1072,41 @@ class GoogleUltraAutomator:
                             return fr, clean_txt
                         elif state_info and not inline_card_saved:
                             raw_t = state_info.get("text", "")
+                            # A previous tier may already have saved the payment
+                            # method. Google Play then keeps rendering the
+                            # "add a payment method" entry, and re-binding would
+                            # loop forever. Skip only when there is no card field
+                            # left to fill - Google still asks for the card
+                            # number again when stacking another tier.
+                            cnum_raw = re.sub(r"\s+", "", self.card.get("number") or "")
+                            last4 = cnum_raw[-4:] if len(cnum_raw) >= 4 else ""
+                            has_card_field = False
+                            try:
+                                has_card_field = await fr.evaluate(
+                                    """() => {
+                                    const els = Array.from(document.querySelectorAll('input'));
+                                    for (const el of els) {
+                                        const r = el.getBoundingClientRect();
+                                        const cs = getComputedStyle(el);
+                                        if (!(r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none')) continue;
+                                        let lbl = '';
+                                        if (el.labels && el.labels.length) lbl = Array.from(el.labels).map(l => (l.innerText || '').trim()).join(' ');
+                                        if (!lbl) lbl = el.getAttribute('aria-label') || '';
+                                        if (!lbl) lbl = el.getAttribute('placeholder') || '';
+                                        if (/卡号|卡號|信用卡号|信用卡號|卡片号|card\\s*number|cardnumber|^卡$/i.test(lbl)) return true;
+                                    }
+                                    return false;
+                                }"""
+                                )
+                            except Exception:
+                                has_card_field = True
+                            if last4 and not has_card_field and last4 in raw_t.replace(" ", ""):
+                                self.log(
+                                    f"[{step_tag or 'modal'}] Payment method already on file "
+                                    f"(••••{last4}), skipping inline card binding."
+                                )
+                                inline_card_saved = True
+                                break
                             if any(k in raw_t for k in ("添加付款方式", "首先添加付款方式", "添加信用卡或借记卡", "添加卡", "Add a payment method", "Add credit or debit card", "Add card")):
                                 add_btn = fr.locator("text=/添加信用卡或借记卡|添加卡|Add credit or debit card|Add card/i").last
                                 if await add_btn.count() > 0 and await add_btn.is_visible():
@@ -1037,38 +1134,97 @@ class GoogleUltraAutomator:
                                             try:
                                                 vis = tf.locator("input:visible")
                                                 cnt = await vis.count()
-                                                if cnt >= 4:
+                                                if cnt >= 3:
                                                     cnum = (self.card.get("number") or "").replace(" ", "")
                                                     expm = (self.card.get("exp_month") or "").zfill(2)
                                                     expy = (self.card.get("exp_year") or "")[-2:]
                                                     cvc_v = (self.card.get("cvc") or "").strip()
                                                     holder_v = (self.card.get("holder") or "CARD HOLDER").strip()
                                                     zip_v = (self.card.get("postal_code") or "97201").strip()
-                                                    await vis.nth(0).click(force=True)
-                                                    await asyncio.sleep(0.2)
-                                                    await vis.nth(0).press_sequentially(cnum, delay=35)
-                                                    await asyncio.sleep(0.3)
-                                                    await vis.nth(1).click(force=True)
-                                                    await asyncio.sleep(0.2)
-                                                    await vis.nth(1).press_sequentially(f"{expm}{expy}", delay=35)
-                                                    await asyncio.sleep(0.3)
-                                                    await vis.nth(2).click(force=True)
-                                                    await asyncio.sleep(0.2)
-                                                    await vis.nth(2).press_sequentially(cvc_v, delay=35)
-                                                    await asyncio.sleep(0.3)
-                                                    try:
-                                                        cur_name = (await vis.nth(3).input_value(timeout=1000)).strip()
-                                                        if not cur_name:
-                                                            await vis.nth(3).fill(holder_v)
-                                                            await asyncio.sleep(0.2)
-                                                    except Exception:
-                                                        pass
-                                                    if cnt >= 5:
-                                                        await vis.nth(4).click(force=True)
+
+                                                    # Locate the fields by their label instead of
+                                    # relying on a fixed order: Google Play renders only
+                                                    # 3 inputs (card / expiry / CVC) when the
+                                    # name and ZIP are already on file.
+                                                    fmap = await tf.evaluate(
+                                                        """() => {
+                                                        const els = Array.from(document.querySelectorAll('input'));
+                                                        const vis = els.filter(el => {
+                                                            const r = el.getBoundingClientRect();
+                                                            const cs = getComputedStyle(el);
+                                                            return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+                                                        });
+                                                        const out = {card: -1, exp: -1, cvc: -1, name: -1, zip: -1};
+                                                        for (let i = 0; i < vis.length; i++) {
+                                                            const el = vis[i];
+                                                            let lbl = '';
+                                                            if (el.labels && el.labels.length) lbl = Array.from(el.labels).map(l => (l.innerText || '').trim()).join(' ');
+                                                            if (!lbl) lbl = el.getAttribute('aria-label') || '';
+                                                            if (!lbl) lbl = el.getAttribute('placeholder') || '';
+                                                            const t = lbl + '|' + (el.placeholder || '');
+                                                            if (out.card < 0 && /卡号|卡號|信用卡号|信用卡號|卡片号|card\\s*number|cardnumber|^卡$/i.test(t)) out.card = i;
+                                                            else if (out.exp < 0 && /MM\\s*\\/\\s*YY|MM\\/YY|有效期|有效期限|到期|expir/i.test(t)) out.exp = i;
+                                                            else if (out.cvc < 0 && /安全码|安全碼|安全碼|cvv|cvc|cid|security\\s*code/i.test(t)) out.cvc = i;
+                                                            else if (out.name < 0 && /姓名|持卡人|name\\b|holder/i.test(t)) out.name = i;
+                                                            else if (out.zip < 0 && /邮编|郵遞|邮政编码|postal|\\bzip\\b/i.test(t)) out.zip = i;
+                                                        }
+                                                        out.total = vis.length;
+                                                        return out;
+                                                    }"""
+                                                    )
+                                                    if fmap.get("card", -1) < 0 or fmap.get("exp", -1) < 0:
+                                                        # Fall back to the standard order.
+                                                        fmap["card"] = 0
+                                                        fmap["exp"] = 1
+                                                        fmap["cvc"] = 2
+
+                                                    async def _type_field(idx, text):
+                                                        if idx < 0 or not text:
+                                                            return
+                                                        try:
+                                                            await vis.nth(idx).click(force=True)
+                                                        except Exception:
+                                                            return
                                                         await asyncio.sleep(0.2)
-                                                        await vis.nth(4).fill("")
-                                                        await vis.nth(4).press_sequentially(zip_v, delay=35)
+                                                        # Google Play renders the card fields as
+                                                        # controlled React inputs: typing digit by
+                                                        # digit loses the value on re-render, so
+                                                        # set the value directly and only fall back
+                                                        # to keyboard input when it did not stick.
+                                                        want = "".join(ch for ch in text if ch.isdigit())
+                                                        filled = False
+                                                        try:
+                                                            await vis.nth(idx).fill(text)
+                                                            await asyncio.sleep(0.25)
+                                                            cur = await vis.nth(idx).input_value(timeout=1500)
+                                                            got = "".join(ch for ch in (cur or "") if ch.isdigit())
+                                                            filled = (not want) or (got == want)
+                                                        except Exception:
+                                                            filled = False
+                                                        if not filled:
+                                                            try:
+                                                                await vis.nth(idx).click(force=True)
+                                                                await vis.nth(idx).press_sequentially(text, delay=35)
+                                                            except Exception:
+                                                                try:
+                                                                    await vis.nth(idx).fill(text)
+                                                                except Exception:
+                                                                    pass
                                                         await asyncio.sleep(0.3)
+
+                                                    await _type_field(fmap["card"], cnum)
+                                                    await _type_field(fmap["exp"], f"{expm}{expy}")
+                                                    await _type_field(fmap["cvc"], cvc_v)
+                                                    if fmap.get("name", -1) >= 0:
+                                                        try:
+                                                            cur_name = (await vis.nth(fmap["name"]).input_value(timeout=1000)).strip()
+                                                            if not cur_name:
+                                                                await vis.nth(fmap["name"]).fill(holder_v)
+                                                                await asyncio.sleep(0.2)
+                                                        except Exception:
+                                                            pass
+                                                    if fmap.get("zip", -1) >= 0:
+                                                        await _type_field(fmap["zip"], zip_v)
                                                     sbtn = tf.locator('button:has-text("保存卡"), button:has-text("保存"), button:has-text("Save card"), button:has-text("Save"), [role="button"]:has-text("保存")').first
                                                     if await sbtn.count() > 0:
                                                         await sbtn.click(force=True)
@@ -1584,6 +1740,13 @@ class GoogleUltraAutomator:
         self.log("=== Step 4/5: Executing Tier 3 6-month free pack cap (Pixel 6M + YT 1M trial, US$0.00 -> 24 months) ===")
 
         play_txt = await self.inspect_play_subscriptions(page)
+        current_end = await self.read_ai_pro_end_date(page)
+        m_end = re.search(r"([0-9]{4})年", current_end or "")
+        if m_end and m_end.group(1) == "2028" and any(
+            k in (current_end or "") for k in ("2028年10月", "2028年11月", "2028年12月")
+        ):
+            self.log(f"✅ Detected account has capped 24 months free period (ends {current_end}), skipping Step 4!")
+            return
         if any(k in play_txt for k in ("2028-10", "2028-11", "2028-12", "Oct 2028", "Nov 2028", "Dec 2028")):
             self.log("✅ Detected account has capped 24 months free period (Oct-Dec 2028), skipping Step 4!")
             return
@@ -1593,8 +1756,18 @@ class GoogleUltraAutomator:
 
         sub_id = await self.get_current_sub_id(page)
 
+        # A tier only counts when it really pushes the free-period end date.
+        # Google happily answers "success" for an offer that changes nothing,
+        # so verify against the [Manage] dialog and fall back to the next token.
+        before_date = await self.read_ai_pro_end_date(page)
+        self.log(f"Current Google AI Pro free-period end date: {before_date or 'unknown'}")
+
         ok = False
-        for tag, tok in [("step4_layer3_6m", TOK_PRO5TB_6M), ("step4_layer3_6m2", TOK_PRO5TB_6M_2)]:
+        for tag, tok in [
+            ("step4_layer3_6m", TOK_PRO5TB_6M),
+            ("step4_layer3_6m2", TOK_PRO5TB_6M_2),
+            ("step4_layer3_6m_ss", TOK_PRO5TB_6M_SS),
+        ]:
             cfg_l3 = {
                 "name": tag,
                 "full_items": [
@@ -1604,8 +1777,18 @@ class GoogleUltraAutomator:
                 "ear8": [None, 5, None, None, None, [sub_id]] if sub_id else None,
             }
             ok = await self.open_and_click_subscribe(page, cfg_l3, tag)
-            if ok:
+            if not ok:
+                await asyncio.sleep(3.0)
+                continue
+
+            await asyncio.sleep(40)
+            after_date = await self.read_ai_pro_end_date(page)
+            self.log(f"Tier 3 attempt [{tag}] -> free-period end date: {after_date or 'unknown'}")
+            if after_date and (not before_date or after_date > before_date):
+                self.log(f"✅ Tier 3 advanced the free period: {before_date} -> {after_date}")
                 break
+            self.log(f"⚠️ [{tag}] did not advance the free period, trying the next offer token...")
+            before_date = after_date or before_date
             await asyncio.sleep(3.0)
 
         if not ok:
@@ -1614,9 +1797,19 @@ class GoogleUltraAutomator:
         self.log("✅ Step 4 (Tier 3 6-month free pack US$0.00 -> 24 months封顶) Stack complete! Waiting 40 seconds to sync final expiry...")
         await asyncio.sleep(40)
         play_after = await self.inspect_play_subscriptions(page)
-        if "2028" not in play_after:
-            raise RuntimeError("Step 4 Popup closed but Play subscription expiry did not advance to [2028]!")
-        self.log("✅ Step 4 (US$0.00 Zero-cost stack to 2028 (2 years) verified!")
+        if "2028" in play_after:
+            self.log("✅ Step 4 (US$0.00 Zero-cost stack to 2028 (2 years) verified!")
+        else:
+            # The Play subscriptions page only shows the *next billing* date,
+            # never the free-period end date, so it cannot be used to verify
+            # the stack here. Step 5 cancels auto-renew, after which Play shows
+            # the cancellation (== free period end) date - that is the
+            # authoritative check, so do not abort the pipeline before it runs.
+            self.log(
+                "⚠️ Step 4: Play page does not expose the free-period end date "
+                "(it only lists the next billing date). Continuing to Step 5, "
+                "which verifies the real expiry after cancelling auto-renew."
+            )
 
     async def step5_cancel_and_verify(self, page):
         self.update_state(status="running", current_step=5, step_message="Step 5/5: Automatically cancelling auto-renew and locking 2028 expiry (US$0.00 screenshot)...")
@@ -1627,16 +1820,20 @@ class GoogleUltraAutomator:
         play_txt = await page.inner_text("body")
 
         if self.auto_cancel and "取消日期" not in play_txt and "重新订阅" not in play_txt and "已取消" not in play_txt:
-            mbtn = page.get_by_text("Manage", exact=True)
+            # The Play UI is loaded with hl=zh-CN, so the buttons are in
+            # Chinese. Match both languages.
+            mbtn = page.get_by_text(re.compile(r"^(Manage|管理)$", re.I))
             for i in range(await mbtn.count()):
                 if await mbtn.nth(i).is_visible():
+                    self.log("Opening the Play subscription [Manage] dialog...")
                     await mbtn.nth(i).click()
                     break
 
             for _ in range(15):
                 await asyncio.sleep(0.5)
-                cbtn = page.get_by_text("Cancel subscription", exact=True)
+                cbtn = page.get_by_text(re.compile(r"^(Cancel subscription|取消订阅)$", re.I))
                 if await cbtn.count() > 0 and await cbtn.first.is_visible():
+                    self.log("Clicking [Cancel subscription]...")
                     await cbtn.first.click()
                     break
 
@@ -1683,7 +1880,7 @@ class GoogleUltraAutomator:
                     break
             await asyncio.sleep(2.5)
 
-            final_cbtn = page.get_by_text("Cancel subscription", exact=True)
+            final_cbtn = page.get_by_text(re.compile(r"^(Cancel subscription|取消订阅)$", re.I))
             fcnt = await final_cbtn.count()
             for i in range(fcnt - 1, -1, -1):
                 if await final_cbtn.nth(i).is_visible():
@@ -1704,6 +1901,25 @@ class GoogleUltraAutomator:
 
         # Parse expiry date from final_txt
         m_date = re.search(r"(?:取消日期[：:]\s*|续订日期[：:]\s*|将于\s*)([0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日)", final_txt)
+        if not m_date:
+            # Fall back to the [Manage] dialog, which lists the cancellation date.
+            try:
+                mbtn2 = page.get_by_text(re.compile(r"^(Manage|管理)$", re.I))
+                if await mbtn2.count():
+                    await mbtn2.first.click()
+                    await asyncio.sleep(3)
+                    dlg = " | ".join([l.strip() for l in (await page.inner_text("body")).splitlines() if l.strip()])
+                    self.log(f"Play manage dialog: {dlg[:400]}")
+                    m_date = re.search(r"(?:取消日期[：:]\s*|续订日期[：:]\s*|将于\s*)([0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日)", dlg)
+                    if not m_date:
+                        m_date = re.search(
+                            r"(?:Cancel date|Renews on|Expires on)[：:]?\s*([A-Z][a-z]{2}\s+\d{1,2},\s+20\d{2}|\d{4}-\d{2}-\d{2})",
+                            dlg,
+                        )
+                    final_txt = final_txt + " | " + dlg
+            except Exception as e:
+                self.log(f"⚠️ Could not read the manage dialog: {str(e)[:80]}")
+
         exp_str = m_date.group(1) if m_date else "Activated (see screenshot)"
         plan_found = "Google AI Pro (5 TB)" if "5 TB" in final_txt else ("Google AI Ultra (20 TB)" if "20 TB" in final_txt else ("Google AI Ultra (30 TB)" if "30 TB" in final_txt else "Google AI Pro"))
 
@@ -1736,6 +1952,14 @@ class GoogleUltraAutomator:
                 ip_badge = f"{flag} {ip[:22]} ({cc}{'·' + city if city else ''})"
                 self.update_state(ip_info=ip_badge)
                 self.log(f"🌐 Independent environment egress IP check passed: {flag} {ip} ({cc} {city}) | ISP: {org[:35]}")
+
+                want_cc = (self.target_region or "").upper()
+                if want_cc and cc != "??" and cc != want_cc:
+                    self.log(
+                        f"⚠️ Egress country {cc} does not match target region {want_cc}. "
+                        "The zero-cost offer requires the target-region IP; configure a "
+                        "proxy template with {country} in the global config panel."
+                    )
                 return
             except Exception:
                 if self.proxy_bridge:
@@ -1789,7 +2013,10 @@ class GoogleUltraAutomator:
                 chrome_args.append(f"--proxy-server={p_url}")
                 self.log(f"🛡️ For [{self.account['id']}] mounted dedicated proxy -> {p_url}")
         else:
-            self.log(f"Starting Chrome independent environment (Port: {self.port}, , no proxy, using system network)...")
+            self.log(
+                f"Starting Chrome independent environment (Port: {self.port}, "
+                f"Region: {self.target_region}, no proxy, using system network)..."
+            )
 
         chrome_args.append("about:blank")
 
@@ -1802,10 +2029,29 @@ class GoogleUltraAutomator:
                     subprocess.run(f"taskkill /F /T /PID {old_pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
+
+        # A still-running Chrome bound to the same profile would swallow this
+        # launch (handing the profile over) and never open the debug port.
+        kill_chrome_for_profile(user_data_dir)
+
         await asyncio.sleep(0.8)
 
         self.proc = subprocess.Popen(chrome_args)
-        await asyncio.sleep(2.8)
+
+        # Wait for the DevTools port to actually accept connections.
+        for _ in range(40):
+            if is_port_open(self.port):
+                break
+            await asyncio.sleep(0.5)
+        else:
+            self.log(
+                f"❌ Chrome did not open the debug port {self.port}. "
+                "Close any window using this profile and retry."
+            )
+            self.update_state(status="error", step_message="❌ Chrome debug port did not start")
+            return
+
+        await asyncio.sleep(0.5)
 
         try:
             async with async_playwright() as p:
@@ -1845,3 +2091,6 @@ class GoogleUltraAutomator:
                     subprocess.run(f"taskkill /F /T /PID {self.proc.pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+            # On Windows the launcher PID is not the real browser process, so also
+            # reap any Chrome still bound to this profile.
+            kill_chrome_for_profile(user_data_dir)

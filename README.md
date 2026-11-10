@@ -2,7 +2,7 @@
 Google AI Pro (5 TB) Zero-Cost 2-Year Full Auto Console  
 ========================================================================  
 
-**Multilingual Support:** 中文 (Chinese) | English | Bahasa Indonesia (Indonesian)
+**Multilingual Support:** 中文 (Chinese) | English | Bahasa Indonesia (Indonesian) | Tiếng Việt (Vietnamese)
 
 Disclaimer: This project is provided as open-source for community analysis and learning purposes.
 
@@ -32,6 +32,7 @@ python app.py
   - 中文 (简体) - Chinese Simplified
   - English
   - Bahasa Indonesia
+  - Tiếng Việt - Vietnamese
 
 ## III. Configuration & Account Setup
 
@@ -81,28 +82,31 @@ python app.py
 ├── requirements.txt      # Python dependencies
 ├── templates/
 │   └── index.html       # Multi-language web UI
-├── i18n_zh.json         # Chinese translations
-├── i18n_en.json         # English translations
-├── i18n_id.json         # Indonesian translations
+├── i18n_zh_cn.json      # Chinese translations
+├── i18n_en_us.json      # English translations
+├── i18n_id_id.json      # Indonesian translations
+├── i18n_vi_vn.json      # Vietnamese translations
 └── screenshots/         # Account proof screenshots
 ```
 
 ## VI. Internationalization (i18n)
 
 All UI text is translatable:
-- **i18n_zh.json** - Chinese Simplified (102 keys)
-- **i18n_en.json** - English (102 keys)
-- **i18n_id.json** - Indonesian (102 keys)
+- **i18n_zh_cn.json** - Chinese Simplified (96 keys)
+- **i18n_en_us.json** - English (95 keys)
+- **i18n_id_id.json** - Indonesian (95 keys)
+- **i18n_vi_vn.json** - Vietnamese (97 keys)
 
 Language preference stored in browser localStorage. Add new languages by:
-1. Creating `i18n_[lang].json` with all 102 keys
-2. Adding option to language selector in `templates/index.html`
+1. Creating `i18n_[lang].json` with all keys
+2. Registering the code in `lang_map` inside `app.py` (`load_i18n`)
+3. Adding option to language selector in `templates/index.html`
 
 ## VII. API Endpoints
 
 - `GET /` - Web UI
 - `GET /api/state` - Current state (accounts, logs, config)
-- `GET /api/i18n?lang=zh-CN|en|id` - Get translations
+- `GET /api/i18n?lang=zh-CN|en|id|vi` - Get translations
 - `POST /api/config` - Update configuration
 - `POST /api/accounts/import` - Bulk import accounts
 - `POST /api/accounts/delete` - Delete account

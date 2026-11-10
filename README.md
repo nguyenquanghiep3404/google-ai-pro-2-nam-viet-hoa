@@ -2,7 +2,7 @@
 Google AI Pro (5 TB) Zero-Cost 2-Year Full Auto Console  
 ========================================================================  
 
-**English** | [Tiếng Việt](README.vi.md)
+**English** | [Bahasa Indonesia](README.id.md) | [Tiếng Việt](README.vi.md) | [中文 (简体)](README.zh-CN.md)
 
 **Multilingual Support:** 中文 (Chinese) | English | Bahasa Indonesia (Indonesian) | Tiếng Việt (Vietnamese)
 
@@ -91,6 +91,8 @@ python app.py
 ├── i18n_id_id.json      # Indonesian translations
 ├── i18n_vi_vn.json      # Vietnamese translations
 ├── README.vi.md         # Vietnamese readme
+├── README.id.md         # Indonesian readme
+├── README.zh-CN.md      # Simplified Chinese readme
 ├── HUONGDAN.md          # Detailed usage guide (Vietnamese)
 └── screenshots/         # Account proof screenshots
 ```
@@ -145,6 +147,16 @@ Language preference stored in browser localStorage. Add new languages by:
 
 ## IX. Troubleshooting
 
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Chrome did not open the debug port` | A leftover Chrome window still holds the account profile | Close every Chrome window of this project and run again (the build also kills them for you) |
+| `Target page, context or browser has been closed` | The Chrome window was closed mid-run | Run again and pick the step it stopped at |
+| `Please fill in complete payment card info` | No card configured | Fill in card number, expiry and CVC in the config panel |
+| Egress country ≠ US | No US proxy configured | Configure a US proxy and test it again |
+| Price is not $0.00 | Wrong egress country, or the account is not eligible | Check the IP line in the log |
+| `Batch queue is already running` | A previous queue is stuck | Click **⏹ Stop Task**, or restart the server |
+| `407 Unauthorized` when testing the proxy | Wrong username or password | Copy-paste straight from the provider dashboard: `I` (capital i) and `l` (lower L) look alike |
+
 **Port already in use:**
 ```bash
 python app.py --port 9000
@@ -153,16 +165,6 @@ python app.py --port 9000
 **Chrome not found:**
 - Ensure Chrome is installed in default path
 - Or set `CHROME_PATH` environment variable
-
-**Proxy issues:**
-- Test proxy in UI using **Test Proxy Connectivity** button
-- Verify credentials and format
-- A `407 Unauthorized` usually means a wrong password. Copy-paste it straight
-  from the provider dashboard: `I` (capital i) and `l` (lower L) look alike.
-
-**Chrome did not open the debug port:**
-- A leftover Chrome window still holds the account profile. Close every Chrome
-  window of this project and run again (the build also kills them for you).
 
 ## X. References
 
@@ -175,3 +177,7 @@ Vietnamese fork + Windows pipeline fixes: https://github.com/nguyenquanghiep3404
 ---
 
 **License:** As per original project terms
+
+## ⚠️ Warning
+
+This tool automates Google AI Pro registration across **multiple accounts** and binds a payment card. Bulk use may **violate the Google Terms of Service** and get the accounts locked. Use it only with accounts you legitimately own, and take responsibility for any consequences.

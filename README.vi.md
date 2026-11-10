@@ -2,7 +2,7 @@
 Google AI Pro (5 TB) — Bảng Điều Khiển Tự Động 2 Năm Miễn Phí
 =======================================================================
 
-[English](README.md) | **Tiếng Việt**
+[English](README.md) | [Bahasa Indonesia](README.id.md) | **Tiếng Việt** | [中文 (简体)](README.zh-CN.md)
 
 **Hỗ trợ đa ngôn ngữ:** 中文 (Trung Quốc) | English | Bahasa Indonesia (Indonesia) | Tiếng Việt (Việt Nam)
 
@@ -153,6 +153,9 @@ YouTube Premium Individual Add On  - 将于 2026年12月9日结束
 ├── i18n_en_us.json        # Bản dịch English
 ├── i18n_id_id.json        # Bản dịch Indonesia
 ├── i18n_vi_vn.json        # Bản dịch Tiếng Việt
+├── README.vi.md           # README tiếng Việt
+├── README.id.md           # README Bahasa Indonesia
+├── README.zh-CN.md        # README Trung Quốc (Giản thể)
 ├── HUONGDAN.md            # Hướng dẫn sử dụng chi tiết (tiếng Việt)
 ├── profiles/              # Profile Chrome riêng cho mỗi tài khoản (tự sinh)
 └── screenshots/           # Ảnh minh chứng (tự sinh)

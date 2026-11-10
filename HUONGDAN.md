@@ -1,6 +1,8 @@
 # Hướng Dẫn Sử Dụng — Google AI Pro (5 TB) Console Tự Động
 
 > Giao diện: http://127.0.0.1:8765 · Đổi ngôn ngữ ở dropdown góc trên bên phải (Tiếng Việt / English / Bahasa Indonesia / 中文)
+>
+> [English](README.md) | [Bahasa Indonesia](README.id.md) | **Tiếng Việt** | [中文 (简体)](README.zh-CN.md)
 
 ---
 
